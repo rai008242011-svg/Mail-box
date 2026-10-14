@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AI & メール 統合ハブ</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<style>
+:root{--bg:#f5f6f8;--panel:#fff;--text:#1d2330;--sub:#667085;--line:#e3e6ec;--accent:#4f6bed;--on:#fff;--me:#e8edff;--ai:#f0f2f6}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1218;--panel:#181c25;--text:#e8ebf2;--sub:#98a1b3;--line:#2a303d;--accent:#7b93ff;--on:#0f1218;--me:#26325f;--ai:#222836}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font:15px/1.6 system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top,0)}
+button,input,select,textarea{font:inherit;color:var(--text)}
+button{cursor:pointer}
+.btn{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:7px 12px}
+.btn.pri{background:var(--accent);color:var(--on);border-color:var(--accent)}
+input,select,textarea{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%}
+header{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line)}
+header b{flex:1}
+.tabs{display:flex;gap:6px}
+.tab{background:none;border:0;padding:6px 12px;border-radius:8px}
+.tab.on{background:var(--accent);color:var(--on)}
+#app{flex:1;min-height:0;display:flex}
+.col{display:flex;flex-direction:column;min-height:0}
+.side{width:230px;background:var(--panel);border-right:1px solid var(--line);padding:10px;overflow:auto}
+.side .it{display:block;width:100%;text-align:left;background:none;border:0;padding:8px;border-radius:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.side .it.on,.side .it:hover{background:var(--bg)}
+.main{flex:1;min-width:0}
+.msgs{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+.m{max-width:85%;padding:9px 13px;border-radius:14px;white-space:pre-wrap;word-break:break-word}
+.m.user{align-self:flex-end;background:var(--me)}
+.m.assistant{align-self:flex-start;background:var(--ai)}
+.m small{display:block;color:var(--sub);font-size:11px;margin-bottom:2px}
+.composer{display:flex;gap:8px;padding:10px;background:var(--panel);border-top:1px solid var(--line);padding-bottom:calc(10px + env(safe-area-inset-bottom,0))}
+.composer textarea{resize:none;height:44px}
+.bar{display:flex;gap:8px;padding:8px 10px;background:var(--panel);border-bottom:1px solid var(--line)}
+.bar select,.bar input{width:auto;flex:1}
+.page{padding:16px;overflow:auto;max-width:720px;margin:0 auto;width:100%}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+.row{display:flex;gap:8px;align-items:center;margin-top:8px}
+.sub{color:var(--sub);font-size:13px}
+.mail{padding:10px 0;border-bottom:1px solid var(--line)}
+.mail b{display:block}
+.login{margin:auto;width:min(340px,92vw)}
+@media(max-width:700px){.side{display:none}}
+</style>
+</head>
+<body>
+<div id="root" style="display:contents"></div>
+<script>
+// ===== 設定 =====
+const SB_URL="https://oqawhqogeikktxpbilbd.supabase.co";
+const SB_KEY="sb_publishable_ojQOZBJW_-mIv2opUbzU2g_3J1FimWn";
+const sb=supabase.createClient(SB_URL,SB_KEY);
+const PROV={openai:"ChatGPT (OpenAI)",anthropic:"Claude (Anthropic)",gemini:"Gemini (Google)"};
+const MODELS={openai:"gpt-4o-mini",anthropic:"claude-sonnet-5-5",gemini:"gemini-2.5-flash"};
+
+const $=(h)=>{const t=document.createElement("template");t.innerHTML=h.trim();return t.content.firstChild};
+const root=document.getElementById("root");
+let tab="ai",convs=[],convId=null,msgs=[],busy=false,provider="anthropic";
+
+async function api(body,fn="hub-ai"){
+  const {data,error}=await sb.functions.invoke(fn,{body});
+  if(error){let m=error.message;try{m=(await error.context.json()).error||m}catch(e){}throw new Error(m)}
+  return data;
+}
+
+// ===== 認証 =====
+function showLogin(){
+  root.replaceChildren($(`<div class="login card"><h3>🧭 統合ハブ</h3>
+    <input id="em" type="email" placeholder="メールアドレス" autocomplete="email"><div style="height:8px"></div>
+    <input id="pw" type="password" placeholder="パスワード(8文字以上)" autocomplete="current-password">
+    <div class="row"><button class="btn pri" id="in">ログイン</button><button class="btn" id="up">新規登録</button></div>
+    <p class="sub" id="msg"></p></div>`));
+  const go=async(kind)=>{
+    const email=em.value.trim(),password=pw.value;
+    const {error}=kind==="in"?await sb.auth.signInWithPassword({email,password}):await sb.auth.signUp({email,password});
+    msg.textContent=error?error.message:(kind==="up"?"登録しました。確認メールが届いた場合はリンクを開いてからログインしてください。":"");
+  };
+  document.getElementById("in").onclick=()=>go("in");
+  document.getElementById("up").onclick=()=>go("up");
+}
+
+// ===== レイアウト =====
+function shell(){
+  root.replaceChildren($(`<div style="display:contents">
+  <header><b>🧭 統合ハブ</b><div class="tabs">
+   <button class="tab" data-t="ai">AI</button><button class="tab" data-t="mail">メール</button><button class="tab" data-t="keys">APIキー</button></div>
+   <button class="btn" id="out">ログアウト</button></header><div id="app"></div></div>`));
+  document.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{tab=b.dataset.t;render()});
+  document.getElementById("out").onclick=()=>sb.auth.signOut();
+}
+function render(){
+  document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("on",b.dataset.t===tab));
+  const app=document.getElementById("app");
+  if(tab==="ai")return renderAI(app);
+  if(tab==="mail")return renderMail(app);
+  return renderKeys(app);
+}
+
+// ===== AIチャット =====
+async function loadConvs(){
+  const {data}=await sb.from("hub_ai_conversations").select("id,title").order("created_at",{ascending:false});
+  convs=data||[];
+}
+async function openConv(id){
+  convId=id;
+  if(id){const {data}=await sb.from("hub_ai_messages").select("role,content,provider").eq("conversation_id",id).order("created_at");msgs=data||[]}else msgs=[];
+  renderAI(document.getElementById("app"));
+}
+async function renderAI(app){
+  if(!convs.length&&!app.dataset.loaded){await loadConvs();app.dataset.loaded=1}
+  app.replaceChildren($(`<div style="display:contents">
+   <div class="side col"><button class="btn pri" id="nc" style="width:100%;margin-bottom:8px">＋ 新しい会話</button><div id="cl"></div></div>
+   <div class="main col"><div class="bar"><select id="pv">${Object.entries(PROV).map(([k,v])=>`<option value="${k}" ${k===provider?"selected":""}>${v}</option>`).join("")}</select>
+   <input id="md" placeholder="モデル名" value="${MODELS[provider]}"></div>
+   <div class="msgs" id="ms"></div>
+   <div class="composer"><textarea id="tx" placeholder="メッセージ(Ctrl+Enterで送信)"></textarea><button class="btn pri" id="sd">送信</button></div></div></div>`));
+  const cl=document.getElementById("cl");
+  convs.forEach(c=>{const b=document.createElement("button");b.className="it"+(c.id===convId?" on":"");b.textContent=c.title;b.onclick=()=>openConv(c.id);cl.appendChild(b)});
+  document.getElementById("nc").onclick=()=>openConv(null);
+  document.getElementById("pv").onchange=e=>{provider=e.target.value;md.value=MODELS[provider]};
+  paintMsgs();
+  document.getElementById("sd").onclick=send;
+  document.getElementById("tx").onkeydown=e=>{if(e.key==="Enter"&&(e.ctrlKey||e.metaKey)){e.preventDefault();send()}};
+}
+function paintMsgs(){
+  const ms=document.getElementById("ms");if(!ms)return;
+  ms.replaceChildren();
+  msgs.forEach(m=>{const d=document.createElement("div");d.className="m "+m.role;
+    if(m.role==="assistant"&&m.provider){const s=document.createElement("small");s.textContent=PROV[m.provider]||m.provider;d.appendChild(s)}
+    d.appendChild(document.createTextNode(m.content));ms.appendChild(d)});
+  ms.scrollTop=ms.scrollHeight;
+}
+async function send(){
+  if(busy)return;
+  const text=tx.value.trim();if(!text)return;
+  const {data:{user}}=await sb.auth.getUser();
+  busy=true;tx.value="";
+  try{
+    if(!convId){
+      const {data,error}=await sb.from("hub_ai_conversations").insert({user_id:user.id,title:text.slice(0,30)}).select().single();
+      if(error)throw error;convId=data.id;convs.unshift(data);
+    }
+    msgs.push({role:"user",content:text});paintMsgs();
+    await sb.from("hub_ai_messages").insert({user_id:user.id,conversation_id:convId,role:"user",content:text});
+    msgs.push({role:"assistant",content:"…",provider});paintMsgs();
+    const res=await api({action:"chat",provider,model:md.value.trim(),messages:msgs.slice(0,-1).map(m=>({role:m.role,content:m.content}))});
+    msgs[msgs.length-1].content=res.text;
+    await sb.from("hub_ai_messages").insert({user_id:user.id,conversation_id:convId,role:"assistant",provider,content:res.text});
+  }catch(e){
+    if(msgs.length&&msgs[msgs.length-1].content==="…")msgs[msgs.length-1].content="⚠️ "+e.message;
+    else alert(e.message);
+  }
+  busy=false;paintMsgs();
+}
+
+// ===== メール =====
+const PNAME={gmail:"Gmail",outlook:"Outlook",yahoo:"Yahoo!メール",icloud:"iCloud"};
+async function renderMail(app){
+  app.replaceChildren($(`<div class="page"><div class="card"><b>接続中のメール</b><div id="ac" class="sub">読み込み中…</div>
+   <div class="row"><button class="btn pri" id="cg">＋ Gmailを接続</button><button class="btn" id="sy">今すぐ同期</button>
+   <button class="btn" disabled title="準備中">Outlook(準備中)</button></div><p class="sub" id="st"></p></div>
+   <div class="card"><b>統合受信箱</b><div id="ml" class="sub">読み込み中…</div></div></div>`));
+  const st=document.getElementById("st");
+  document.getElementById("cg").onclick=async()=>{
+    try{const r=await api({action:"connect",provider:"gmail",return_to:location.origin+location.pathname},"hub-mail");location.href=r.url}
+    catch(e){st.textContent="⚠️ "+e.message}
+  };
+  document.getElementById("sy").onclick=()=>syncMail(st);
+  await paintMail();
+}
+async function syncMail(st){
+  if(st)st.textContent="同期中…";
+  try{
+    const r=await api({action:"sync"},"hub-mail");
+    if(st)st.textContent=r.results.length?r.results.map(x=>x.error?`${x.email}: ⚠️ ${x.error}`:`${x.email}: ${x.count}件取得`).join(" / "):"接続済みのメールがありません";
+  }catch(e){if(st)st.textContent="⚠️ "+e.message}
+  await paintMail();
+}
+async function paintMail(){
+  const ac=document.getElementById("ac"),box=document.getElementById("ml");
+  if(!ac||!box)return;
+  const {data:accs}=await sb.from("hub_mail_accounts").select("id,provider,email_address,status,last_synced_at");
+  ac.replaceChildren();ac.className="";
+  if(!accs||!accs.length){ac.className="sub";ac.textContent="まだありません"}
+  (accs||[]).forEach(a=>{
+    const r=document.createElement("div");r.className="row";
+    const t=document.createElement("span");
+    t.textContent=`${PNAME[a.provider]||a.provider}: ${a.email_address}(${a.status==="reauth"?"再接続が必要":"接続中"})`;
+    const d=document.createElement("button");d.className="btn";d.textContent="解除";
+    d.onclick=async()=>{if(confirm("この接続と取り込んだメールを削除しますか？")){await api({action:"disconnect",account_id:a.id},"hub-mail");renderMail(document.getElementById("app"))}};
+    r.append(t,d);ac.appendChild(r);
+  });
+  const {data:ml}=await sb.from("hub_mail_messages").select("from_name,from_addr,subject,snippet,received_at,is_read,account_id").order("received_at",{ascending:false}).limit(50);
+  if(!ml||!ml.length){box.className="sub";box.textContent="メールはまだありません。「今すぐ同期」を押してください";return}
+  box.replaceChildren();box.className="";
+  const em=Object.fromEntries((accs||[]).map(a=>[a.id,a.email_address]));
+  ml.forEach(m=>{const d=document.createElement("div");d.className="mail";
+    const b=document.createElement("b");b.textContent=(m.is_read?"":"● ")+(m.subject||"(件名なし)");
+    const s=document.createElement("span");s.className="sub";
+    s.textContent=`${m.from_name||m.from_addr||""} ・ ${new Date(m.received_at).toLocaleString("ja-JP")} ・ ${em[m.account_id]||""}\n${m.snippet||""}`;
+    s.style.whiteSpace="pre-wrap";
+    d.append(b,s);box.appendChild(d)});
+}
+
+// ===== APIキー =====
+async function renderKeys(app){
+  app.replaceChildren($(`<div class="page"><div class="card"><b>AIのAPIキー</b>
+   <p class="sub">キーはサーバー側に保存され、ブラウザからは二度と読み出せません(保存・削除・使用済みかの確認のみ)。</p><div id="kl">読み込み中…</div></div></div>`));
+  let st;try{st=await api({action:"keys_status"})}catch(e){document.getElementById("kl").textContent="⚠️ "+e.message;return}
+  const kl=document.getElementById("kl");kl.replaceChildren();
+  st.providers.forEach(p=>{
+    const row=$(`<div class="row"><span style="width:150px">${PROV[p.provider]}</span><input type="password" placeholder="${p.hasKey?"登録済み(上書き可)":"APIキーを貼り付け"}"><button class="btn pri">保存</button>${p.hasKey?'<button class="btn">削除</button>':""}</div>`);
+    const [inp,save,del]=[row.querySelector("input"),row.querySelector(".pri"),row.querySelectorAll("button")[1]];
+    save.onclick=async()=>{try{await api({action:"set_key",provider:p.provider,key:inp.value});renderKeys(app)}catch(e){alert(e.message)}};
+    if(del)del.onclick=async()=>{if(confirm("削除しますか？")){await api({action:"delete_key",provider:p.provider});renderKeys(app)}};
+    kl.appendChild(row);
+  });
+}
+
+// ===== 起動 =====
+let started=false;
+sb.auth.onAuthStateChange((_e,session)=>{
+  if(session){if(!started){started=true;shell();
+    const q=new URLSearchParams(location.search);
+    if(q.get("mail")){tab="mail";history.replaceState(null,"",location.pathname);
+      render();
+      if(q.get("mail")==="connected")setTimeout(()=>syncMail(document.getElementById("st")),300);
+      else setTimeout(()=>{const s=document.getElementById("st");if(s)s.textContent="⚠️ 接続できませんでした。もう一度お試しください"},300);
+    }else render()}}
+  else{started=false;convs=[];convId=null;msgs=[];showLogin()}
+});
+sb.auth.getSession().then(({data})=>{if(!data.session)showLogin()});
+</script>
+</body>
+</html>
